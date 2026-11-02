@@ -7,14 +7,24 @@ My work on the Kaggle competition [Name That LLM](https://www.kaggle.com/competi
 - **Key difficulty:** test prompts are unseen, so topic words don't help; the model has to learn writing *style*
 - **Deadline:** 13 Jan 2027
 
+## Table of contents
+
+- [Project files](#project-files)
+- [EDA findings](#eda-findings)
+  - [1. Sentence length (weak signal)](#1-sentence-length-weak-signal)
+  - [2. Punctuation (strongest signal for families)](#2-punctuation-strongest-signal-for-families)
+  - [3. Overused words (best clue for some twins)](#3-overused-words-best-clue-for-some-twins)
+  - [Summary](#summary)
+- [Model training](#model-training)
+  - [Part 1: N-gram features + linear classifiers](#part-1-n-gram-features--linear-classifiers)
+  - [Part 2: Encoder models](#part-2-encoder-models)
+
 ## Project files
 
 | File | What it is |
 |---|---|
 | `data/train.csv` | 2,699 labelled passages: `id`, `prompt_id`, `text`, `model` |
-| `data/test.csv` | unlabelled passages (full set only available when Kaggle scores a submission) |
-| `data/sample_submission.parquet` | submission format: `id`, `model` |
-| `script.ipynb` | main notebook: loading, EDA, charts |
+| `script.ipynb` | main notebook: loading, EDA, charts, model training |
 
 150 prompts, each answered by all 18 models (150 passages per model; `claude-fable-5` has 149).
 
@@ -69,58 +79,87 @@ Words each model uses much more often than the other 17, keeping only words used
 
 ## Model training
 
-### Baseline: TF-IDF + linear SVM
+### Part 1: N-gram features + linear classifiers
 
-The first model turns each passage into numbers and trains a linear classifier on them. The features are chosen to match what the EDA found:
+Each passage is turned into numbers by a vectorizer, then a linear classifier learns which patterns belong to which model. No text cleaning is done (no lowercasing, punctuation removal, stopword removal or lemmatising), because the EDA showed that punctuation and small words are the signal.
 
-| Features | What they capture | Linked EDA finding |
+#### Vectorizers
+
+Both vectorizers combine two views with `make_union`:
+
+| View | What it captures | Linked EDA finding |
 |---|---|---|
 | **Character n-grams** (2–5 characters) | punctuation and typing habits, e.g. `’s`, ` — `, `; t` | punctuation separates the families |
 | **Word n-grams** (single words and pairs, punctuation kept as tokens) | vocabulary and phrasing | word choice helps separate some twins |
 
-- Both use **TF-IDF**: each pattern is weighted by how often it appears in a passage, and patterns common to every passage are down-weighted.
-- The classifier is a **LinearSVC** (`C=0.5`) with `class_weight='balanced'`, so all 18 models count equally, matching the balanced-accuracy metric.
+- **TF-IDF** weights each pattern by how often it appears, scales each passage for its length, and down-weights patterns every passage uses.
+- **Count** uses raw counts, with no length scaling or down-weighting.
 
-### Validation
+#### Classifiers
+
+- **LinearSVC** (`C=0.5`): a linear support vector machine, the standard choice for large sparse text features.
+- **Logistic regression** (`C=10`, `max_iter=2000`): also linear, and it outputs probabilities, which will be needed later for blending models.
+- Both use `class_weight='balanced'`, so all 18 models count equally, matching the balanced-accuracy metric.
+
+#### Validation
 
 - **5-fold GroupKFold on `prompt_id`:** each fold holds out whole prompts, so the model is always tested on questions it has never seen, just like the real test set.
-- Every passage gets one out-of-fold prediction, and balanced accuracy is computed on all of them.
+- Every passage gets one out-of-fold prediction, and balanced accuracy is computed over all 2,699 of them.
 
-### Results
+#### Results
 
-**Balanced accuracy: 0.338** (random guessing ≈ 0.056).
+| Vectorizer | Classifier | Balanced accuracy |
+|---|---|---|
+| TF-IDF | Logistic regression | **0.346** |
+| TF-IDF | LinearSVC | 0.338 |
+| Count | Logistic regression | 0.307 |
+| Count | LinearSVC | 0.293 |
 
-Recall per model (share of its passages predicted correctly):
+Random guessing scores about 0.056.
 
-| Model | Recall |
-|---|---|
-| `gemini-3.1-pro-preview` | 0.74 |
-| `gemini-3.8-flash` | 0.31 |
-| `claude-opus-5` | 0.67 |
-| `kimi-k3` | 0.29 |
-| `gpt-6-astra` | 0.54 |
-| `gpt-5.5` | 0.28 |
-| `gemini-3.6-flash` | 0.43 |
-| `gpt-5.6-luna` | 0.28 |
-| `gemini-3.7-flash` | 0.43 |
-| `gpt-5.6-terra` | 0.23 |
-| `claude-opus-4-6` | 0.42 |
-| `gpt-5.6-sol` | 0.21 |
-| `claude-sonnet-5` | 0.35 |
-| `glm-5.3` | 0.17 |
-| `qwen3.8-max` | 0.35 |
-| `glm-5.3-flash` | 0.16 |
-| `claude-opus-4-8` | 0.14 |
-| `claude-fable-5` | 0.08 |
+Recall per model (share of its passages predicted correctly), sorted by the best combination:
 
-### What the confusion matrix shows
+| Model | TF-IDF + LR | TF-IDF + SVM | Count + LR | Count + SVM |
+|---|---|---|---|---|
+| `claude-opus-5` | 0.65 | 0.67 | 0.45 | 0.39 |
+| `gemini-3.1-pro-preview` | 0.65 | 0.74 | 0.67 | 0.64 |
+| `gpt-6-astra` | 0.49 | 0.54 | 0.49 | 0.50 |
+| `gemini-3.6-flash` | 0.45 | 0.43 | 0.37 | 0.35 |
+| `gemini-3.7-flash` | 0.45 | 0.43 | 0.39 | 0.36 |
+| `claude-opus-4-6` | 0.41 | 0.42 | 0.37 | 0.33 |
+| `gpt-5.6-luna` | 0.37 | 0.28 | 0.22 | 0.17 |
+| `qwen3.8-max` | 0.37 | 0.35 | 0.31 | 0.31 |
+| `claude-sonnet-5` | 0.36 | 0.35 | 0.27 | 0.30 |
+| `gemini-3.8-flash` | 0.33 | 0.31 | 0.32 | 0.28 |
+| `gpt-5.5` | 0.31 | 0.28 | 0.26 | 0.27 |
+| `kimi-k3` | 0.29 | 0.29 | 0.23 | 0.23 |
+| `gpt-5.6-sol` | 0.23 | 0.21 | 0.15 | 0.17 |
+| `gpt-5.6-terra` | 0.23 | 0.23 | 0.26 | 0.24 |
+| `glm-5.3` | 0.19 | 0.17 | 0.22 | 0.22 |
+| `claude-opus-4-8` | 0.18 | 0.14 | 0.23 | 0.20 |
+| `glm-5.3-flash` | 0.17 | 0.16 | 0.17 | 0.15 |
+| `claude-fable-5` | 0.11 | 0.08 | 0.13 | 0.16 |
 
-- **Gemini is easy to recognise as a family.** About 97% of Gemini passages are predicted as some Gemini model. `gemini-3.1-pro-preview` is the best-recognised model overall, matching its distinctive style in the EDA. The flash models mostly get mixed up with each other (e.g. 33% of 3.8-flash is predicted as 3.7-flash).
-- **Claude and GLM act like one family.** They share straight apostrophes, heavy em-dashes and spaced em-dashes, and the model can't separate them. Both GLMs are predicted as Claude more often than as GLM, and `claude-opus-5` acts as a catch-all for the group: it absorbs 25% of `glm-5.3`, 21% of `claude-fable-5` and 15% of `claude-opus-4-8`.
-- **The GPT-5.6 twins are hard, as expected.** Luna, Sol and Terra (0.21–0.28) spread their predictions across each other and `gpt-6-astra`, consistent with them sharing most of their vocabulary. `gpt-6-astra` does well (0.54), likely helped by its short, steady sentences.
+#### What the results show
+
+- **TF-IDF beats Count by about 0.04** with both classifiers. Passage length is random (40–250 words), and raw counts let long passages look different just because they are long. TF-IDF's length scaling removes that.
+- **Logistic regression and LinearSVC score almost the same** (0.346 vs 0.338). A difference this small is within the noise of a 150-prompt dataset. Logistic regression is kept as the main model because it gives probabilities.
+- **The same models are easy or hard in every combination.** `gemini-3.1-pro-preview` (0.64–0.74) and `gpt-6-astra` (0.49–0.54) are always recognised best, matching their distinctive style in the EDA. `claude-fable-5`, `glm-5.3-flash`, `claude-opus-4-8` and the GPT-5.6 twins are always among the worst. The weak classes come from the data, not from the choice of model.
+- **`claude-opus-5` is a catch-all with TF-IDF.** Its recall is high (0.65–0.67) but its precision is low (0.35–0.37): many Claude and GLM passages get labelled as Opus 5. With Count features its recall drops to 0.39–0.45 and the other Claude and GLM models rise slightly, but the overall score is lower.
+
+#### What the confusion matrix shows (TF-IDF + SVM)
+
+- **Gemini is easy to recognise as a family.** About 97% of Gemini passages are predicted as some Gemini model. The flash models mostly get mixed up with each other (e.g. 33% of 3.8-flash is predicted as 3.7-flash).
+- **Claude and GLM act like one family.** They share straight apostrophes, heavy em-dashes and spaced em-dashes, and the model can't separate them. Both GLMs are predicted as Claude more often than as GLM, and `claude-opus-5` absorbs 25% of `glm-5.3`, 21% of `claude-fable-5` and 15% of `claude-opus-4-8`.
+- **The GPT-5.6 twins spread their predictions** across each other and `gpt-6-astra`, consistent with them sharing most of their vocabulary.
 - **`gpt-5.5`, `kimi-k3` and `qwen3.8-max` get mixed up.** All three use curly apostrophes and none has strong word habits.
 
-### Why it's below public baselines (~0.43)
+#### Why the scores are limited
 
-- **Validation noise:** with only 150 prompts, the score can move a few points depending on how prompts are split into folds.
-- **Less data:** public baselines of this type were trained on the official data plus large community-generated datasets.
+- **Little data:** each model has only 150 passages, and about 120 per fold for training.
+- **Near-identical twins:** some models share both punctuation and vocabulary, leaving few patterns to separate them.
+- **Short passages:** at 40 words, many style clues simply don't appear.
+- **Surface patterns only:** n-grams count characters and words, but don't capture sentence structure or tone.
+- **Comparison:** public notebooks report about 0.43 for this kind of model, but trained on the official data plus large community-generated datasets.
+
+### Part 2: Encoder models
