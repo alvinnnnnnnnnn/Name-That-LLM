@@ -24,7 +24,8 @@ My work on the Kaggle competition [Name That LLM](https://www.kaggle.com/competi
 | File | What it is |
 |---|---|
 | `data/train.csv` | 2,699 labelled passages: `id`, `prompt_id`, `text`, `model` |
-| `script.ipynb` | main notebook: loading, EDA, charts, model training |
+| `eda.ipynb` | eda notebook: EDA, charts |
+| `part1.ipynb`| part 1 notebook: model training (N-gram features + linear classifiers) |
 
 150 prompts, each answered by all 18 models (150 passages per model; `claude-fable-5` has 149).
 
@@ -161,5 +162,8 @@ Recall per model (share of its passages predicted correctly), sorted by the best
 - **Short passages:** at 40 words, many style clues simply don't appear.
 - **Surface patterns only:** n-grams count characters and words, but don't capture sentence structure or tone.
 - **Comparison:** public notebooks report about 0.43 for this kind of model, but trained on the official data plus large community-generated datasets.
+
+#### Score on test data (on Kaggle)
+TF-IDF + Logistic Regression scored 0.35 on test data
 
 ### Part 2: Encoder models
