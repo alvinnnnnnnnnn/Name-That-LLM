@@ -25,7 +25,8 @@ My work on the Kaggle competition [Name That LLM](https://www.kaggle.com/competi
 |---|---|
 | `data/train.csv` | 2,699 labelled passages: `id`, `prompt_id`, `text`, `model` |
 | `eda.ipynb` | eda notebook: EDA, charts |
-| `part1.ipynb`| part 1 notebook: model training (N-gram features + linear classifiers) |
+| `data/nlm-matched-clean/` | external passages from Dhruv Tibarewal's public Kaggle dataset [nlm-matched-clean](https://www.kaggle.com/datasets/dhruvtibarewal/nlm-matched-clean): `nlm_matched_clean.parquet` (24,443 rows), `nlm_pool_v2.parquet` (37,252), `nlm_pool_v5.parquet` (119,899) |
+| `part1.ipynb`| part 1 notebook: model training (N-gram features + linear classifiers), C tuning with Optuna, training with external data |
 
 150 prompts, each answered by all 18 models (150 passages per model; `claude-fable-5` has 149).
 
@@ -148,13 +149,6 @@ Recall per model (share of its passages predicted correctly), sorted by the best
 - **The same models are easy or hard in every combination.** `gemini-3.1-pro-preview` (0.64–0.74) and `gpt-6-astra` (0.49–0.54) are always recognised best, matching their distinctive style in the EDA. `claude-fable-5`, `glm-5.3-flash`, `claude-opus-4-8` and the GPT-5.6 twins are always among the worst. The weak classes come from the data, not from the choice of model.
 - **`claude-opus-5` is a catch-all with TF-IDF.** Its recall is high (0.65–0.67) but its precision is low (0.35–0.37): many Claude and GLM passages get labelled as Opus 5. With Count features its recall drops to 0.39–0.45 and the other Claude and GLM models rise slightly, but the overall score is lower.
 
-#### What the confusion matrix shows (TF-IDF + SVM)
-
-- **Gemini is easy to recognise as a family.** About 97% of Gemini passages are predicted as some Gemini model. The flash models mostly get mixed up with each other (e.g. 33% of 3.8-flash is predicted as 3.7-flash).
-- **Claude and GLM act like one family.** They share straight apostrophes, heavy em-dashes and spaced em-dashes, and the model can't separate them. Both GLMs are predicted as Claude more often than as GLM, and `claude-opus-5` absorbs 25% of `glm-5.3`, 21% of `claude-fable-5` and 15% of `claude-opus-4-8`.
-- **The GPT-5.6 twins spread their predictions** across each other and `gpt-6-astra`, consistent with them sharing most of their vocabulary.
-- **`gpt-5.5`, `kimi-k3` and `qwen3.8-max` get mixed up.** All three use curly apostrophes and none has strong word habits.
-
 #### Why the scores are limited
 
 - **Little data:** each model has only 150 passages, and about 120 per fold for training.
@@ -165,5 +159,55 @@ Recall per model (share of its passages predicted correctly), sorted by the best
 
 #### Score on test data (on Kaggle)
 TF-IDF + Logistic Regression scored 0.35 on test data
+
+#### Tuning C with Optuna (TF-IDF + logistic regression)
+
+Only the classifier's `C` was tuned; the vectorizer was left unchanged. 30 Optuna trials searched `C` from 0.01 to 70 on a log scale, starting from the current `C=10`. Each trial was scored with the same 5-fold GroupKFold and the overall out-of-fold balanced accuracy, so the numbers compare directly with the results table above. **Best: `C ≈ 31.5`, balanced accuracy 0.349**, against 0.346 at `C=10`.
+
+#### Adding external data (`nlm_pool_v5`)
+
+**Data:** `nlm_pool_v5.parquet` has 119,899 passages covering all 18 models and 14,964 prompt keys. They are written under the competition's own protocol (one user message asking for a single paragraph of about N words), deduplicated, and filtered against `train.csv`. Checks run before use:
+- all labels match the 18 competition names
+- no exact or near-duplicate overlap with `train.csv`
+- about 0.5% of external passages look like they answer one of the 150 train prompts, so topic leakage into validation is negligible
+- the classes are imbalanced (for example `gpt-5.6-luna` 11,022, `gemini-3.7-flash` 4,797, `claude-opus-5` 3,123)
+
+**Setup:**
+- The external rows are added to the **training side of each fold only**. Validation is still the held-out official passages, so the score stays comparable with the results above.
+- The model is TF-IDF + logistic regression with `C ≈ 31.5`, `class_weight='balanced'` and the same 5-fold GroupKFold.
+
+**Result: balanced accuracy 0.462**, up from 0.349 with official data only:
+
+Recall per model, compared with TF-IDF + LR on official data only (`C=10`; per-model recall for the tuned `C` was not computed), sorted by the new recall:
+
+| Model | Official only | + `nlm_pool_v5` | Change |
+|---|---|---|---|
+| `gemini-3.1-pro-preview` | 0.65 | 0.71 | +0.06 |
+| `gemini-3.6-flash` | 0.45 | 0.68 | +0.23 |
+| `gemini-3.8-flash` | 0.33 | 0.65 | +0.32 |
+| `claude-opus-4-6` | 0.41 | 0.65 | +0.24 |
+| `claude-sonnet-5` | 0.36 | 0.60 | +0.24 |
+| `gpt-6-astra` | 0.49 | 0.57 | +0.08 |
+| `gpt-5.6-luna` | 0.37 | 0.55 | +0.18 |
+| `qwen3.8-max` | 0.37 | 0.54 | +0.17 |
+| `claude-opus-5` | 0.65 | 0.52 | −0.13 |
+| `gpt-5.6-terra` | 0.23 | 0.42 | +0.19 |
+| `gpt-5.5` | 0.31 | 0.38 | +0.07 |
+| `gpt-5.6-sol` | 0.23 | 0.38 | +0.15 |
+| `kimi-k3` | 0.29 | 0.32 | +0.03 |
+| `claude-opus-4-8` | 0.18 | 0.31 | +0.13 |
+| `glm-5.3-flash` | 0.17 | 0.31 | +0.14 |
+| `claude-fable-5` | 0.11 | 0.27 | +0.16 |
+| `gemini-3.7-flash` | 0.45 | 0.26 | −0.19 |
+| `glm-5.3` | 0.19 | 0.20 | +0.01 |
+
+**What changed:**
+
+- **16 of 18 models improved.** The biggest gains are among twins that were hard before: `gemini-3.8-flash` (+0.32), `claude-opus-4-6` and `claude-sonnet-5` (+0.24), `gemini-3.6-flash` (+0.23), and the GPT-5.6 twins (+0.15 to +0.19).
+- **The weakest models improved, but are still weak.** `claude-fable-5` went from 0.11 to 0.27, and `claude-opus-4-8` and `glm-5.3-flash` both reached 0.31.
+- **`claude-opus-5` is less of a catch-all.** Its recall fell from 0.65 to 0.52, as the classifier now separates the other Claude and GLM models better instead of defaulting to Opus 5. This is likely a healthy change rather than a loss.
+- **`gemini-3.7-flash` got worse** (0.45 → 0.26). It has fewer external passages than its twins (4,797 vs 9,088 for 3.8-flash and 6,521 for 3.6-flash), so the other flash models may now absorb it. The confusion matrix should confirm where its passages go.
+- **`glm-5.3` barely moved** (0.19 → 0.20) despite 8,046 external passages, and is now the weakest model. It is likely still being confused with `glm-5.3-flash` and Claude.
+- **`kimi-k3` gained little** (+0.03).
 
 ### Part 2: Encoder models
