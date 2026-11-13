@@ -14,10 +14,10 @@ My work on the Kaggle competition [Name That LLM](https://www.kaggle.com/competi
   - [1. Sentence length (weak signal)](#1-sentence-length-weak-signal)
   - [2. Punctuation (strongest signal for families)](#2-punctuation-strongest-signal-for-families)
   - [3. Overused words (best clue for some twins)](#3-overused-words-best-clue-for-some-twins)
-  - [Summary](#summary)
-- [Model training](#model-training)
-  - [Part 1: N-gram features + linear classifiers](#part-1-n-gram-features--linear-classifiers)
-  - [Part 2: Encoder models](#part-2-encoder-models)
+- [Part 1: N-gram features + linear classifiers](#part-1-n-gram-features--linear-classifiers)
+  - [Results with official train data only](#results-with-official-train-data-only)
+  - [Results after adding external data](#results-after-adding-external-data-nlm_pool_v5)
+- [Part 2: Encoder model (two-stage ModernBERT)](#part-2-encoder-model-two-stage-modernbert)
 
 ## Project files
 
@@ -25,8 +25,9 @@ My work on the Kaggle competition [Name That LLM](https://www.kaggle.com/competi
 |---|---|
 | `data/train.csv` | 2,699 labelled passages: `id`, `prompt_id`, `text`, `model` |
 | `eda.ipynb` | eda notebook: EDA, charts |
-| `data/nlm-matched-clean/` | external passages from Dhruv Tibarewal's public Kaggle dataset [nlm-matched-clean](https://www.kaggle.com/datasets/dhruvtibarewal/nlm-matched-clean): `nlm_matched_clean.parquet` (24,443 rows), `nlm_pool_v2.parquet` (37,252), `nlm_pool_v5.parquet` (119,899) |
+| `data/nlm-matched-clean/nlm_pool_v5.parquet` | external passages from Dhruv Tibarewal's public Kaggle dataset [nlm-matched-clean](https://www.kaggle.com/datasets/dhruvtibarewal/nlm-matched-clean) |
 | `part1.ipynb`| part 1 notebook: model training (N-gram features + linear classifiers), C tuning with Optuna, training with external data |
+| `part2.ipynb` | part 2 notebook: two-stage ModernBERT (stage 1 on the external pool, stage 2 on the official passages with 5-fold GroupKFold) |
 
 150 prompts, each answered by all 18 models (150 passages per model; `claude-fable-5` has 149).
 
@@ -108,7 +109,7 @@ Both vectorizers combine two views with `make_union`:
 - **5-fold GroupKFold on `prompt_id`:** each fold holds out whole prompts, so the model is always tested on questions it has never seen, just like the real test set.
 - Every passage gets one out-of-fold prediction, and balanced accuracy is computed over all 2,699 of them.
 
-#### Results
+#### Results with official train data only
 
 | Vectorizer | Classifier | Balanced accuracy |
 |---|---|---|
@@ -142,14 +143,13 @@ Recall per model (share of its passages predicted correctly), sorted by the best
 | `glm-5.3-flash` | 0.17 | 0.16 | 0.17 | 0.15 |
 | `claude-fable-5` | 0.11 | 0.08 | 0.13 | 0.16 |
 
-#### What the results show
-
+**What the results show:**
 - **TF-IDF beats Count by about 0.04** with both classifiers. Passage length is random (40–250 words), and raw counts let long passages look different just because they are long. TF-IDF's length scaling removes that.
 - **Logistic regression and LinearSVC score almost the same** (0.346 vs 0.338). A difference this small is within the noise of a 150-prompt dataset. Logistic regression is kept as the main model because it gives probabilities.
 - **The same models are easy or hard in every combination.** `gemini-3.1-pro-preview` (0.64–0.74) and `gpt-6-astra` (0.49–0.54) are always recognised best, matching their distinctive style in the EDA. `claude-fable-5`, `glm-5.3-flash`, `claude-opus-4-8` and the GPT-5.6 twins are always among the worst. The weak classes come from the data, not from the choice of model.
 - **`claude-opus-5` is a catch-all with TF-IDF.** Its recall is high (0.65–0.67) but its precision is low (0.35–0.37): many Claude and GLM passages get labelled as Opus 5. With Count features its recall drops to 0.39–0.45 and the other Claude and GLM models rise slightly, but the overall score is lower.
 
-#### Why the scores are limited
+**Why the scores are limited:**
 
 - **Little data:** each model has only 150 passages, and about 120 per fold for training.
 - **Near-identical twins:** some models share both punctuation and vocabulary, leaving few patterns to separate them.
@@ -157,14 +157,13 @@ Recall per model (share of its passages predicted correctly), sorted by the best
 - **Surface patterns only:** n-grams count characters and words, but don't capture sentence structure or tone.
 - **Comparison:** public notebooks report about 0.43 for this kind of model, but trained on the official data plus large community-generated datasets.
 
-#### Score on test data (on Kaggle)
-TF-IDF + Logistic Regression scored 0.35 on test data
+**Score on test data (on Kaggle):** TF-IDF + Logistic Regression scored 0.35 on test data
 
-#### Tuning C with Optuna (TF-IDF + logistic regression)
+**Tuning C with Optuna (TF-IDF + logistic regression):** 
 
 Only the classifier's `C` was tuned; the vectorizer was left unchanged. 30 Optuna trials searched `C` from 0.01 to 70 on a log scale, starting from the current `C=10`. Each trial was scored with the same 5-fold GroupKFold and the overall out-of-fold balanced accuracy, so the numbers compare directly with the results table above. **Best: `C ≈ 31.5`, balanced accuracy 0.349**, against 0.346 at `C=10`.
 
-#### Adding external data (`nlm_pool_v5`)
+#### Results after adding external data
 
 **Data:** `nlm_pool_v5.parquet` has 119,899 passages covering all 18 models and 14,964 prompt keys. They are written under the competition's own protocol (one user message asking for a single paragraph of about N words), deduplicated, and filtered against `train.csv`. Checks run before use:
 - all labels match the 18 competition names
@@ -202,7 +201,6 @@ Recall per model, compared with TF-IDF + LR on official data only (`C=10`; per-m
 | `glm-5.3` | 0.19 | 0.20 | +0.01 |
 
 **What changed:**
-
 - **16 of 18 models improved.** The biggest gains are among twins that were hard before: `gemini-3.8-flash` (+0.32), `claude-opus-4-6` and `claude-sonnet-5` (+0.24), `gemini-3.6-flash` (+0.23), and the GPT-5.6 twins (+0.15 to +0.19).
 - **The weakest models improved, but are still weak.** `claude-fable-5` went from 0.11 to 0.27, and `claude-opus-4-8` and `glm-5.3-flash` both reached 0.31.
 - **`claude-opus-5` is less of a catch-all.** Its recall fell from 0.65 to 0.52, as the classifier now separates the other Claude and GLM models better instead of defaulting to Opus 5. This is likely a healthy change rather than a loss.
@@ -210,4 +208,82 @@ Recall per model, compared with TF-IDF + LR on official data only (`C=10`; per-m
 - **`glm-5.3` barely moved** (0.19 → 0.20) despite 8,046 external passages, and is now the weakest model. It is likely still being confused with `glm-5.3-flash` and Claude.
 - **`kimi-k3` gained little** (+0.03).
 
-### Part 2: Encoder models
+**Score on test data (on Kaggle):** 0.429
+
+### Part 2: Encoder model (two-stage ModernBERT)
+
+Part 1 counts characters and words. An encoder model reads the whole passage, so it can also pick up sentence structure and tone. With only 150 official passages per model, it's trained in two stages: first on the large external pool, then on the official passages.
+
+#### Model and setup
+
+- **Model:** `answerdotai/ModernBERT-base` (about 150M parameters) with an 18-class classification head.
+- **Input:** passages are tokenized with no cleaning and cut at 384 tokens. 250 words is about 330 tokens, so almost nothing is lost.
+- **Hardware:** Kaggle T4 GPU (fp16).
+- **Kaggle notebooks:** [stage 1](https://www.kaggle.com/code/alvinwongster/ntllm-alvinwongster-modernbert-stage1) runs in its own notebook (internet on, to download ModernBERT). [Stage 2](https://www.kaggle.com/code/alvinwongster/ntllm-alvinwongster-modernbert-stage2) runs in the submission notebook (internet off) and loads the stage-1 weights from the first notebook's output.
+
+#### Stage 1: training on the external pool
+
+- **Data:** `nlm_pool_v5` (119,899 passages).
+- **Hold-out for early stopping:** 107 prompts (10% of the 1,069 prompts answered by all 18 models), giving 3,690 passages. Every passage of a chosen prompt goes to the hold-out, so no prompt is on both sides. All 18 models appear (107–326 passages each). The other 116,209 passages are used for training.
+- **Training:** learning rate 1e-5, batch size 16, up to 10 epochs. Balanced accuracy on the hold-out is checked every 500 steps; training stops after 3 checks without improvement, and the best checkpoint is kept.
+
+#### Checking for leakage
+
+`nlm_pool_v5` has no passages from `train.csv`, but a source could have rerun the 150 train prompts, giving new passages on the same topics. To check, each prompt was averaged into one content-word TF-IDF vector and compared:
+
+| Comparison | 10th pct | Median | 90th pct |
+|---|---|---|---|
+| Same train prompt (half of its passages vs the other half) | 0.58 | 0.73 | 0.83 |
+| Train prompt vs closest *other* train prompt | 0.10 | 0.17 | 0.34 |
+| Train prompt vs closest pool prompt | 0.22 | 0.31 | 0.41 |
+
+No train prompt matched a pool prompt above 0.58; the five highest matches were 0.44–0.49. Pool prompts score a bit higher than other train prompts because there are thousands of them on similar topics. Caveat: most pool prompts are small (median 3 passages, a quarter have 1), which makes this check less sensitive for them. A passage-level check pointed the same way (median closest-pool similarity 0.17, below the 0.23 median for two passages on the same prompt).
+
+#### Stage 2: fine-tuning on the official passages
+
+- **Validation:** 5-fold GroupKFold on `prompt_id` (the same folds as Part 1). Each fold starts again from the stage-1 weights and trains on the other 4 folds.
+- **Submission:** trains on all 2,699 official passages (learning rate 1e-5, 10 epochs), then predicts `test.csv`.
+
+#### Cross-validation results
+
+The only completed 5-fold run so far used the earlier stage 1 (early stopping on `train.csv`) and different stage-2 settings (learning rate 2e-5, 4 epochs). **Out-of-fold balanced accuracy: 0.453** (folds 0.441–0.469). Local CV with the submitted settings hasn't been run yet.
+
+#### ModernBERT vs TF-IDF, per model
+
+Recall per model, ModernBERT (the 0.453 run) against TF-IDF + LR with `nlm_pool_v5` (0.462), sorted by the difference:
+
+| Model | TF-IDF + pool | ModernBERT | Difference |
+|---|---|---|---|
+| `claude-opus-5` | 0.52 | 0.69 | +0.17 |
+| `gpt-5.5` | 0.38 | 0.54 | +0.16 |
+| `kimi-k3` | 0.32 | 0.46 | +0.14 |
+| `gemini-3.7-flash` | 0.26 | 0.39 | +0.13 |
+| `gpt-6-astra` | 0.57 | 0.67 | +0.10 |
+| `claude-opus-4-8` | 0.31 | 0.38 | +0.07 |
+| `qwen3.8-max` | 0.54 | 0.57 | +0.03 |
+| `gemini-3.1-pro-preview` | 0.71 | 0.73 | +0.02 |
+| `glm-5.3` | 0.20 | 0.19 | −0.01 |
+| `gpt-5.6-sol` | 0.38 | 0.34 | −0.04 |
+| `glm-5.3-flash` | 0.31 | 0.26 | −0.05 |
+| `claude-fable-5` | 0.27 | 0.18 | −0.09 |
+| `claude-opus-4-6` | 0.65 | 0.54 | −0.11 |
+| `claude-sonnet-5` | 0.60 | 0.49 | −0.11 |
+| `gpt-5.6-luna` | 0.55 | 0.43 | −0.12 |
+| `gpt-5.6-terra` | 0.42 | 0.29 | −0.13 |
+| `gemini-3.6-flash` | 0.68 | 0.53 | −0.15 |
+| `gemini-3.8-flash` | 0.65 | 0.47 | −0.18 |
+
+- **The two models are good at different things.** ModernBERT is better on `gpt-5.5`, `kimi-k3`, `gemini-3.7-flash` and `gpt-6-astra`. TF-IDF is better on the Gemini flash twins, the GPT-5.6 twins and most Claude models, where single words and punctuation habits are the main clue.
+- **`claude-opus-5` is a catch-all again** in ModernBERT (recall 0.69), as it was for TF-IDF on official data only.
+- **The GLMs and `claude-fable-5` stay at the bottom** in both models.
+- Because the strengths differ, blending the two models' probabilities is likely to beat either one alone.
+
+#### Part 2 score on test data
+
+**Kaggle test score: 0.468**,
+
+#### Next steps
+
+1. Run local 5-fold CV with the submitted settings (learning rate 1e-5, 10 epochs, new stage 1), and check which epoch scores best.
+2. Blend ModernBERT and TF-IDF probabilities, with the weight chosen on out-of-fold predictions.
+3. Try Sinkhorn balancing and prompt-group assignment (each model answers each prompt once) on the blended probabilities.
